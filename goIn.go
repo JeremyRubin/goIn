@@ -16,73 +16,91 @@
 // along with goIn.  If not, see <http://www.gnu.org/licenses/>.
 
 package goIn
+
 import "code.google.com/p/go.crypto/bcrypt"
 import "net/http"
-
-
+import "github.com/gorilla/sessions"
 
 type GetUser func(user string) (string, bool)
 
-type PasswordMiddleware struct{
-    getUser GetUser
-    servicename string
+type PasswordMiddleware struct {
+	getUser     GetUser
+	servicename string
+	keypairs    [][]byte
+
+	// If not set, must call Init method
+	cookies *sessions.CookieStore
 }
 
+func (pm *PasswordMiddleware) Init() {
+	pm.cookies = sessions.NewCookieStore(pm.keypairs...)
+}
+func (pm *PasswordMiddleware) get(r *http.Request) (*sessions.Session, error) {
+	return pm.cookies.Get(r, pm.servicename)
+}
 
-
-func (pm *PasswordMiddleware) Auth(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc{
-    return func(w http.ResponseWriter, r *http.request){
-        if //TODO Read cookie here 
-            accept(w,r)
-        }
-        else{
-            reject(w,r)
-        }
+func (pm *PasswordMiddleware) addSession(username string, w http.ResponseWriter, r *http.Request) {
+	if session, err := pm.cookies.New(r, pm.servicename); err==nil{
+        session.Values["username"] = username
+	    session.Save(r, w)
+    }else{
+        //TODO: User logged in??
     }
 }
 
-func (pm *PasswordMiddleware) Login(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc{
-    // Check if cookie exists
-    // then fall back to trying to log in
-    // then fail
-    reject := func(w http.ResponseWriter, r *http.request){
-        username := r.PostFormValue("username")
-        password := r.PostFormValue("password")
-        else if hash, exists := pm.getUser(username); CompareHashAndPassword(hash,password)==nil{
-           //TODO set cookie here 
-            accept(w,r)
-        }
-        else{
-            reject(w,r)
-        }
-    }
-    return pm.Auth(accept,reject)
-}
-func (pm *PasswordMiddleware) Logout(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc{
-    return func(w http.ResponseWriter, r *http.request){
-        if //TODO Delete Cookie Here 
-            accept(w,r)
-        }
-        else{
-            reject(w,r)
-        }
-    }
+func (pm *PasswordMiddleware) Auth(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if session, _ := pm.get(r); session.IsNew {
+			reject(w, r)
+		} else {
+			accept(w, r)
+		}
+	}
 }
 
-func (pm *PasswordMiddleware) NewUser(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc{
-    // If username does not exist, then create the user then log them in
+func (pm *PasswordMiddleware) Login(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc {
+	// Check if cookie exists
+	// then fall back to trying to log in
+	// then fail
+	newReject := func(w http.ResponseWriter, r *http.Request) {
+		username := r.PostFormValue("username")
+		password := r.PostFormValue("password")
+		if len(username) == 0 || len(password) == 0 {
+			reject(w, r)
+		} else if hash, exists := pm.getUser(username); exists && bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil {
+			pm.addSession(username, w, r)
+			accept(w, r)
+		} else {
+			reject(w, r)
+		}
+	}
+	return pm.Auth(accept, newReject)
+}
+func (pm *PasswordMiddleware) Logout(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if session, _ := pm.get(r); !session.IsNew {
+			session.Options.MaxAge = -1
+			session.Save(r, w)
+			accept(w, r)
+		} else {
+			reject(w, r)
+		}
+	}
+}
 
-    // If user name does not exist, reject
-    accept := pm.Auth(accept, reject)
-    return func(w http.ResponseWriter, r *http.request){
-        username := r.PostFormValue("username")
-        if hash, bool := pm.getUser(username); !bool{ 
-            // TODO: Create a new user
-            accept(w,r)
-        }
-        else{
-            // Don't create a new user
-            return reject(w,r)
-        }
-    }
+func (pm *PasswordMiddleware) NewUser(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc {
+	// If username does not exist, then create the user then log them in
+
+	// If user name does not exist, reject
+	accept = pm.Auth(accept, reject)
+	return func(w http.ResponseWriter, r *http.Request) {
+		username := r.PostFormValue("username")
+		if _, bool := pm.getUser(username); !bool {
+			// TODO: Create a new user
+			accept(w, r)
+		} else {
+			// Don't create a new user
+			reject(w, r)
+		}
+	}
 }
