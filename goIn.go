@@ -21,13 +21,22 @@ import "code.google.com/p/go.crypto/bcrypt"
 import "net/http"
 import "github.com/gorilla/sessions"
 
+// string ->:stored bcrypt hash, bool -> user exists
 type GetUser func(user string) (string, bool)
 
-type PasswordMiddleware struct {
-	getUser     GetUser
-	servicename string
-	keypairs    [][]byte
+// generate a user, return error if username/password are bad.
+type MakeUser func(user, hash string) *error
 
+//Don't store password, but validate it meets security requirements
+type ValidPassword func(password string) bool
+
+type PasswordMiddleware struct {
+	getUser       GetUser
+	makeUser      MakeUser
+	validPassword ValidPassword
+	servicename   string
+	keypairs      [][]byte
+	cost          int
 	// If not set, must call Init method
 	cookies *sessions.CookieStore
 }
@@ -40,12 +49,12 @@ func (pm *PasswordMiddleware) get(r *http.Request) (*sessions.Session, error) {
 }
 
 func (pm *PasswordMiddleware) addSession(username string, w http.ResponseWriter, r *http.Request) {
-	if session, err := pm.cookies.New(r, pm.servicename); err==nil{
-        session.Values["username"] = username
-	    session.Save(r, w)
-    }else{
-        //TODO: User logged in??
-    }
+	if session, err := pm.cookies.New(r, pm.servicename); err == nil {
+		session.Values["username"] = username
+		session.Save(r, w)
+	} else {
+		//TODO: User logged in??
+	}
 }
 
 func (pm *PasswordMiddleware) Auth(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc {
@@ -65,9 +74,7 @@ func (pm *PasswordMiddleware) Login(accept http.HandlerFunc, reject http.Handler
 	newReject := func(w http.ResponseWriter, r *http.Request) {
 		username := r.PostFormValue("username")
 		password := r.PostFormValue("password")
-		if len(username) == 0 || len(password) == 0 {
-			reject(w, r)
-		} else if hash, exists := pm.getUser(username); exists && bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil {
+		if hash, exists := pm.getUser(username); exists && bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil {
 			pm.addSession(username, w, r)
 			accept(w, r)
 		} else {
@@ -90,16 +97,40 @@ func (pm *PasswordMiddleware) Logout(accept http.HandlerFunc, reject http.Handle
 
 func (pm *PasswordMiddleware) NewUser(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc {
 	// If username does not exist, then create the user then log them in
-
-	// If user name does not exist, reject
-	accept = pm.Auth(accept, reject)
+	// If user name does exist, reject
+	accept = pm.Login(accept, reject)
 	return func(w http.ResponseWriter, r *http.Request) {
+
 		username := r.PostFormValue("username")
-		if _, bool := pm.getUser(username); !bool {
-			// TODO: Create a new user
+		password := r.PostFormValue("password")
+		if !pm.validPassword(password) {
+			reject(w, r)
+		} else if hash, err := bcrypt.GenerateFromPassword([]byte(password), pm.cost); err != nil {
+			reject(w, r)
+		} else if err := pm.makeUser(username, string(hash)); err == nil {
 			accept(w, r)
 		} else {
-			// Don't create a new user
+			reject(w, r)
+		}
+	}
+}
+
+// TODO: fuckit, I'll do it later
+func (pm *PasswordMiddleware) ChangePassword(accept http.HandlerFunc, reject http.HandlerFunc) http.HandlerFunc {
+	// If username does not exist, then create the user then log them in
+	// If user name does exist, reject
+	accept = pm.Login(accept, reject)
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		password := r.PostFormValue("password")
+		username := r.PostFormValue("username")
+		if !pm.validPassword(password) {
+			reject(w, r)
+		} else if hash, err := bcrypt.GenerateFromPassword([]byte(password), pm.cost); err != nil {
+			reject(w, r)
+		} else if err := pm.makeUser(username, string(hash)); err == nil {
+			accept(w, r)
+		} else {
 			reject(w, r)
 		}
 	}
