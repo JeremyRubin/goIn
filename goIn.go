@@ -25,7 +25,7 @@ import "github.com/gorilla/sessions"
 type GetUserFunc func(user string) (string, bool)
 
 // generate a user, return error if username/password are bad.
-type MakeUserFunc func(user, hash string) *error
+type MakeUserFunc func(user, hash string) error
 
 //Don't store password, but validate it meets security requirements
 type ValidPasswordFunc func(password string) bool
