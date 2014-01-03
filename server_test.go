@@ -1,5 +1,4 @@
-package main
-
+package goIn
 import (
 	"fmt"
 	"goIn"
